@@ -120,16 +120,16 @@ pub enum Class {
 
 #[allow(dead_code)]
 pub struct Insn {
-    addr: i64,
-    bits: i32,
-    size: usize, // typically 4 or 2
+    pub addr: i64,
+    pub bits: i32,
+    pub size: usize, // typically 4 or 2
 
     // Decoded
-    class: Class,
-    rd: Reg,
-    rs1: Reg,
-    rs2: Reg,
-    imm: i64, // generalized optional immediate
+    pub class: Class,
+    pub rd: Reg,
+    pub rs1: Reg,
+    pub rs2: Reg,
+    pub imm: i64, // generalized optional immediate
 }
 
 impl fmt::Display for Insn {
