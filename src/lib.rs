@@ -110,39 +110,41 @@ pub enum OpcodeAmo {
 pub enum Class {
     Illegal,
     Alu,
-    Load,
-    Store,
-    Jump,
-    Branch,
+    Load { size: usize, signed: bool },
+    Store { size: usize },
+    Jump { target: i64 },
+    Branch { target: i64 },
     Compjump,
     Atomic,
 }
 
 #[allow(dead_code)]
 pub struct Insn {
-    insn_addr: i64,
-    insn: i32,
-    insn_len: usize, // typically 4 or 2
+    addr: i64,
+    bits: i32,
+    size: usize, // typically 4 or 2
+
+    // Decoded
     class: Class,
     rd: Reg,
     rs1: Reg,
     rs2: Reg,
-    csrd: Option<Csr>,
-    csrs: Option<Csr>,
-    system: bool, // system instruction are handled differently
-    imm: i64,     // generalized optional immediate
-    memop_size: usize,
-    sext_load: bool,
-    target: i64, // For jumps and branches
+    imm: i64, // generalized optional immediate
 }
 
 impl fmt::Display for Insn {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let target = match self.class {
+            Class::Branch { target } => target,
+            Class::Jump { target } => target,
+            _ => 0,
+        };
+
         write!(
             f,
             "{:x} {:08x} {:6} {:14}  #{}  {:x}",
-            self.insn_addr,
-            self.insn,
+            self.addr,
+            self.bits,
             format!("{:?}", self.class).to_lowercase(),
             format!(
                 "{:3} = x{}, x{}",
@@ -151,7 +153,7 @@ impl fmt::Display for Insn {
                 self.rs2
             ),
             self.imm,
-            self.target
+            target
         )
     }
 }
@@ -238,41 +240,36 @@ fn decoders() {
     );
 }
 
-pub fn decode(insn_addr: i64, orig_insn: i32, _xlen: usize) -> Insn {
-    let insn: i32 = /*rvcdecoder(orig_insn, xlen)*/ orig_insn;
+pub fn decode(addr: i64, orig_bits: i32, _xlen: usize) -> Insn {
+    let bits: i32 = /*rvcdecoder(orig_bits, xlen)*/ orig_bits;
 
     let base: Insn = Insn {
-        insn_addr,
-        insn,
-        insn_len: if opext_bf(orig_insn) == 3 { 4 } else { 2 },
+        addr,
+        bits,
+        size: if opext_bf(orig_bits) == 3 { 4 } else { 2 },
         class: Class::Illegal,
         rd: 0,
         rs1: 0,
         rs2: 0,
-        csrd: None,
-        csrs: None,
-        system: false,
         imm: 0,
-        memop_size: 0,
-        sext_load: false,
-        target: 0,
     };
 
-    let rd = rd_bf(insn);
-    let rs1 = rs1_bf(insn);
-    let rs2 = rs2_bf(insn);
-    let funct3 = funct3_bf(insn);
-    let funct7 = funct7_bf(insn);
+    let rd = rd_bf(bits);
+    let rs1 = rs1_bf(bits);
+    let rs2 = rs2_bf(bits);
+    let funct3 = funct3_bf(bits);
+    let funct7 = funct7_bf(bits);
 
     use Opcode::*;
-    match FromPrimitive::from_i32(opcode_bf(insn)).unwrap() {
+    match FromPrimitive::from_i32(opcode_bf(bits)).unwrap() {
         Load => Insn {
-            class: Class::Load,
+            class: Class::Load {
+                size: 1 << (funct3 & 3),
+                signed: funct3 < LoadKind::Lw as i32,
+            },
             rd,
             rs1,
-            imm: itype_imm12_bf(insn),
-            memop_size: 1 << (funct3 & 3),
-            sext_load: funct3 < LoadKind::Lw as i32,
+            imm: itype_imm12_bf(bits),
             ..base
         },
 
@@ -282,40 +279,46 @@ pub fn decode(insn_addr: i64, orig_insn: i32, _xlen: usize) -> Insn {
             ..base
         },
 
-        MiscMem => Insn {
-            class: Class::Branch,
-            system: true,
-            ..base
-        },
+        MiscMem => {
+            todo!("MiscMem need finer decoding")
+            /*
+               Insn {
+                class: Class::Branch { target: 666 /* XXX ??? */ },
+                system: true,
+                ..base
+            }
+             */
+        }
 
         OpImm | OpImm32 => Insn {
             class: Class::Alu,
             rd,
             rs1,
-            imm: itype_imm12_bf(insn),
+            imm: itype_imm12_bf(bits),
             ..base
         },
 
         Auipc => Insn {
             class: Class::Alu,
             rd,
-            imm: insn_addr + utype_imm20_bf(insn),
+            imm: addr.wrapping_add(utype_imm20_bf(bits)),
             ..base
         },
 
         Lui => Insn {
             class: Class::Alu,
             rd,
-            imm: utype_imm20_bf(insn),
+            imm: utype_imm20_bf(bits),
             ..base
         },
 
         Store if funct3 <= 3 => Insn {
-            class: Class::Store,
+            class: Class::Store {
+                size: 1 << (funct3 & 3),
+            },
             rs1,
             rs2,
-            imm: stype_imm12_bf(insn),
-            memop_size: 1 << (funct3 & 3),
+            imm: stype_imm12_bf(bits),
             ..base
         },
 
@@ -325,22 +328,18 @@ pub fn decode(insn_addr: i64, orig_insn: i32, _xlen: usize) -> Insn {
         },
 
         Amo => {
-            let base = Insn {
-                rd,
-                rs1,
-                memop_size: if (funct3 & 1) != 0 { 8 } else { 4 },
-                sext_load: (funct3 & 1) == 0,
-                ..base
-            };
+            let size = if funct3 & 1 != 0 { 8 } else { 4 };
+            let signed = funct3 & 1 == 0;
+            let base = Insn { rd, rs1, ..base };
 
             match FromPrimitive::from_i32(funct7 >> 2) {
                 Some(OpcodeAmo::Lr) => Insn {
-                    class: Class::Load,
+                    class: Class::Load { size, signed },
                     ..base
                 },
 
                 Some(OpcodeAmo::Sc) => Insn {
-                    class: Class::Store,
+                    class: Class::Store { size },
                     rs2,
                     ..base
                 },
@@ -384,10 +383,11 @@ pub fn decode(insn_addr: i64, orig_insn: i32, _xlen: usize) -> Insn {
         }
 
         Branch => Insn {
-            class: Class::Branch,
+            class: Class::Branch {
+                target: addr.wrapping_add(sbtype_imm12_bf(bits)),
+            },
             rs1,
             rs2,
-            target: insn_addr + sbtype_imm12_bf(insn),
             ..base
         },
 
@@ -395,14 +395,15 @@ pub fn decode(insn_addr: i64, orig_insn: i32, _xlen: usize) -> Insn {
             class: Class::Compjump,
             rd,
             rs1,
-            imm: itype_imm12_bf(insn),
+            imm: itype_imm12_bf(bits),
             ..base
         },
 
         Jal => Insn {
-            class: Class::Jump,
+            class: Class::Jump {
+                target: addr.wrapping_add(ujtype_imm20_bf(bits)),
+            },
             rd,
-            target: insn_addr + ujtype_imm20_bf(insn),
             ..base
         },
 
