@@ -240,6 +240,57 @@ fn decoders() {
     );
 }
 
+impl Insn {
+    pub fn disass(&self) -> String {
+        let pc = self.addr;
+        let rd = self.rd;
+        let imm = self.imm;
+        let rs1 = self.rs1;
+        let rs2 = self.rs2;
+
+        match self.class {
+            Class::Store { size } => match size {
+                1 => format!("sb    {imm}(x{rs1}),x{rs2}"),
+                4 => format!("sw    {imm}(x{rs1}),x{rs2}"),
+                _ => todo!("Store size {size}"),
+            },
+            Class::Load { size, signed } => match size {
+                1 if !signed => format!("lbu   x{rd}={imm}(x{rs1})"),
+                _ => todo!(
+                    "Didn't handle LOAD size {size} signed {signed} from {pc:08x} {:08x}",
+                    self.bits
+                ),
+            },
+            Class::Alu => match funct3_bf(self.bits) {
+                0 => {
+                    if self.rs1 == 0 {
+                        format!("li    x{rd}={imm}")
+                    } else if self.imm == 0 {
+                        format!("mv    x{rd}=x{rs1}")
+                    } else {
+                        format!("add   x{rd}=x{rs1},{imm}")
+                    }
+                }
+                _ => todo!(
+                    "Didn't handle OP_IMM funct3 {} from {pc:08x} {:08x}",
+                    funct3_bf(self.bits),
+                    self.bits
+                ),
+            },
+
+            Class::Branch { cond, target } => {
+                let cond = ["eq", "ne", "?1", "?2", "lt", "ge", "ltu", "geu"][cond as usize]; // XXX -> rv64
+                format!("b{cond:3}  x{},x{},{target}", self.rs1, self.rs2)
+            }
+            _ => todo!(
+                "Didn't handle opcode {:?} from {pc:08x} {:08x}",
+                self.class,
+                self.bits,
+            ),
+        }
+    }
+}
+
 pub fn decode(addr: i64, orig_bits: i32, _xlen: usize) -> Insn {
     let bits: i32 = /*rvcdecoder(orig_bits, xlen)*/ orig_bits;
 
