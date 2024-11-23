@@ -1,19 +1,19 @@
 use super::*;
 
 pub struct StoreEffect {
-    pub addr: i32,
-    pub mask: i32,
-    pub value: i32,
+    pub addr: i64,
+    pub mask: i64,
+    pub value: i64,
 }
 
 pub struct ExecEffect {
     pub nextpc: i64,
-    pub res: i32,
+    pub res: i64,
     pub store: Option<StoreEffect>,
 }
 
 impl Insn {
-    pub fn exec(&self, v1: i32, v2: i32, mem_20000000: &[i32]) -> ExecEffect {
+    pub fn exec(&self, v1: i64, v2: i64, mem_20000000: &[i64]) -> ExecEffect {
         let mut res = 0;
         let mut nextpc = self.addr + if self.compressed { 2 } else { 4 };
         let mut store = None;
@@ -21,11 +21,11 @@ impl Insn {
 
         match self.class {
             Class::Store { size, imm } => {
-                let addr = v1.wrapping_add(imm as i32);
+                let addr = v1.wrapping_add(imm as i64);
                 match size {
                     1 => {
-                        let mask = 255 << (8 * (addr & 3));
-                        let value = (v2 & 255) << (8 * (addr & 3));
+                        let mask = 255 << (8 * (addr & 7));
+                        let value = (v2 & 255) << (8 * (addr & 7));
                         store = Some(StoreEffect { addr, mask, value });
                     }
                     4 => {
@@ -41,11 +41,11 @@ impl Insn {
 
             Class::Load { size, imm, signed } => {
                 // XXX Load should also be an exported effect
-                let addr = v1.wrapping_add(imm as i32) as usize;
-                let w = mem_20000000[(addr - 0x20000000) / 4];
+                let addr = v1.wrapping_add(imm as i64);
+                let w = mem_20000000[(addr as usize - 0x20000000) / 4];
                 match size {
                     1 if !signed => {
-                        res = w >> (8 * (addr & 3)) & 255;
+                        res = w >> (8 * (addr & 7)) & 255;
                     }
                     _ => todo!(
                         "Didn't handle LOAD size {size} signed {signed} from {pc:08x} {:08x}",
@@ -54,21 +54,21 @@ impl Insn {
                 }
             }
 
-            Class::Alu(AluOp::Add, _w) => {
+            Class::Alu(AluOp::Add, w) => {
                 res = v1.wrapping_add(v2);
-                /*if w {
+                if w {
                     res = (res as i32) as i64;
-                }*/
+                }
             }
 
-            Class::AluImm(AluOp::Add, _w, imm) => {
-                res = v1.wrapping_add(imm as i32);
-                /*if w {
+            Class::AluImm(AluOp::Add, w, imm) => {
+                res = v1.wrapping_add(imm as i64);
+                if w {
                     res = (res as i32) as i64;
-                }*/
+                }
             }
 
-            Class::Imm(imm) => res = imm as i32,
+            Class::Imm(imm) => res = imm,
 
             Class::Branch { cond, target } => {
                 use BranchCondition::*;
@@ -87,8 +87,8 @@ impl Insn {
             }
 
             Class::JumpR(imm) => {
-                res = nextpc as i32;
-                nextpc = ((v1 + imm as i32) & !-2) as i64;
+                res = nextpc;
+                nextpc = (v1 + imm as i64) & !-2;
             }
 
             _ => panic!(
