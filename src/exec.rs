@@ -15,13 +15,13 @@ pub struct ExecEffect {
 impl Insn {
     pub fn exec(&self, v1: i32, v2: i32, mem_20000000: &[i32]) -> ExecEffect {
         let mut res = 0;
-        let mut nextpc = self.addr + self.size as i64;
+        let mut nextpc = self.addr + if self.compressed { 2 } else { 4 };
         let mut store = None;
         let pc = self.addr;
 
         match self.class {
-            Class::Store { size } => {
-                let addr = v1.wrapping_add(self.imm as i32);
+            Class::Store { size, imm } => {
+                let addr = v1.wrapping_add(imm as i32);
                 match size {
                     1 => {
                         let mask = 255 << (8 * (addr & 3));
@@ -39,9 +39,9 @@ impl Insn {
                 }
             }
 
-            Class::Load { size, signed } => {
+            Class::Load { size, imm, signed } => {
                 // XXX Load should also be an exported effect
-                let addr = v1.wrapping_add(self.imm as i32) as usize;
+                let addr = v1.wrapping_add(imm as i32) as usize;
                 let w = mem_20000000[(addr - 0x20000000) / 4];
                 match size {
                     1 if !signed => {
@@ -54,12 +54,18 @@ impl Insn {
                 }
             }
 
-            Class::Alu(AluOp::Add) => {
+            Class::Alu(AluOp::Add, _w) => {
                 res = v1.wrapping_add(v2);
+                /*if w {
+                    res = (res as i32) as i64;
+                }*/
             }
 
-            Class::AluImm(AluOp::Add, imm) => {
+            Class::AluImm(AluOp::Add, _w, imm) => {
                 res = v1.wrapping_add(imm as i32);
+                /*if w {
+                    res = (res as i32) as i64;
+                }*/
             }
 
             Class::Branch { cond, target } => {
@@ -78,9 +84,9 @@ impl Insn {
                 }
             }
 
-            Class::JumpR => {
-                res = self.addr as i32 + self.size as i32;
-                nextpc = ((v1 + self.imm as i32) & !-2) as i64;
+            Class::JumpR(imm) => {
+                res = nextpc as i32;
+                nextpc = ((v1 + imm as i32) & !-2) as i64;
             }
 
             _ => panic!(

@@ -121,7 +121,7 @@ pub enum OpcodeAmo {
     Amomaxu = 28,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum AluOp {
     Add,
     Sub,
@@ -142,55 +142,64 @@ pub enum AluOp {
     Remu,
 }
 
+impl fmt::Display for AluOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", format!("{self:?}").to_lowercase())
+    }
+}
+
+/// `Class` is a slightly abstracted RISC-V RV64 instruction, aiming
+/// to reduce the amount of RISC-V specific knowledge into just a few
+/// classes.  NB: auipc and lui are both represented as `Imm(imm)`.
+/// Branch and jump targets are also resolved and represented with the
+/// full i64 target address.
+
 #[derive(Debug)]
 pub enum Class {
-    Alu(AluOp),
-    AluImm(AluOp, i64),
-    Load { size: usize, signed: bool },
-    Store { size: usize },
+    Imm(i64),
+    Alu(AluOp, bool),
+    AluImm(AluOp, bool, i16),
+    Load { size: usize, imm: i16, signed: bool },
+    Store { size: usize, imm: i16 },
     Branch { target: i64, cond: BranchCondition },
     Jump { target: i64 },
-    JumpR,
+    JumpR(i16),
     Atomic,
     Illegal,
 }
 
-#[allow(dead_code)]
+impl fmt::Display for Class {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", format!("{self:?}").to_lowercase())
+    }
+}
+
 pub struct Insn {
     pub addr: i64,
     pub bits: i32,
-    pub size: usize, // typically 4 or 2
+    pub compressed: bool,
 
     // Decoded
     pub class: Class,
     pub rd: Reg,
     pub rs1: Reg,
     pub rs2: Reg,
-    pub imm: i64, // generalized optional immediate
 }
 
 impl fmt::Display for Insn {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let target = match self.class {
-            Class::Branch { cond: _, target } => target,
-            Class::Jump { target } => target,
-            _ => 0,
-        };
-
         write!(
             f,
-            "{:x} {:08x} {:6} {:14}  #{}  {:x}",
+            "{:x} {:08x} {:35} {:14}",
             self.addr,
             self.bits,
-            format!("{:?}", self.class).to_lowercase(),
+            self.class,
             format!(
                 "{:3} = x{}, x{}",
                 format_args!("x{}", self.rd),
                 self.rs1,
                 self.rs2
-            ),
-            self.imm,
-            target
+            )
         )
     }
 }
@@ -218,20 +227,20 @@ pub fn funct7_bf(insn: i32) -> i32 {
 }
 
 // I-type
-pub fn itype_imm12_bf(insn: i32) -> i64 {
-    (insn >> 20) as i64
+pub fn itype_imm12_bf(insn: i32) -> i16 {
+    (insn >> 20) as i16
 }
 // S-type
-pub fn stype_imm12_bf(insn: i32) -> i64 {
-    ((insn >> 25 << 5) | ((insn >> 7) & 31)) as i64
+pub fn stype_imm12_bf(insn: i32) -> i16 {
+    ((insn >> 25 << 5) | ((insn >> 7) & 31)) as i16
 }
 // SB-type
-pub fn sbtype_imm12_bf(insn: i32) -> i64 {
+pub fn sbtype_imm12_bf(insn: i32) -> i16 {
     let imm4_1 = (insn >> 8) & 15;
     let imm10_5 = (insn >> 25) & 63;
     let imm11 = (insn >> 7) & 1;
     let imm12 = insn >> 31;
-    ((imm12 << 12) | (imm11 << 11) | (imm10_5 << 5) | (imm4_1 << 1)) as i64
+    ((imm12 << 12) | (imm11 << 11) | (imm10_5 << 5) | (imm4_1 << 1)) as i16
 }
 // U-type
 pub fn utype_imm20_bf(insn: i32) -> i64 {
@@ -254,11 +263,14 @@ fn decoders() {
     assert_eq!(stype_imm12_bf(0x84f18223u32 as i32), -1980);
 
     // 80000540:       00071863                bne     x14,x0,80000550 <_sbrk+0x1c>
-    assert_eq!(sbtype_imm12_bf(0x00071863), (0x80000550i64 - 0x80000540i64));
+    assert_eq!(
+        sbtype_imm12_bf(0x00071863),
+        (0x80000550i64 - 0x80000540i64) as i16
+    );
     // 800037b4:       fc070ee3                beq     x14,x0,80003790 <__sflush_r+0x54>
     assert_eq!(
         sbtype_imm12_bf(0xfc070ee3u32 as i32),
-        (0x80003790i64 - 0x800037b4i64)
+        (0x80003790i64 - 0x800037b4i64) as i16
     );
     // 80000644:       7ed020ef                jal     x1,80003630 <__call_exitprocs>
     // 8000065c:       f01ff0ef                jal     x1,8000055c <_exit>
@@ -281,37 +293,48 @@ impl Insn {
     pub fn disass(&self) -> String {
         let pc = self.addr;
         let rd = self.rd;
-        let imm = self.imm;
         let rs1 = self.rs1;
         let rs2 = self.rs2;
 
         match self.class {
-            Class::Store { size } => match size {
-                1 => format!("sb    {imm}(x{rs1}),x{rs2}"),
-                4 => format!("sw    {imm}(x{rs1}),x{rs2}"),
+            Class::Store { size, imm } => match size {
+                1 => format!("sb      {imm}(x{rs1}),x{rs2}"),
+                4 => format!("sw      {imm}(x{rs1}),x{rs2}"),
                 _ => todo!("Store size {size}"),
             },
-            Class::Load { size, signed } => match size {
-                1 if !signed => format!("lbu   x{rd}={imm}(x{rs1})"),
+            Class::Load { size, imm, signed } => match size {
+                1 if !signed => format!("lbu     x{rd}={imm}(x{rs1})"),
                 _ => todo!(
                     "Didn't handle LOAD size {size} signed {signed} from {pc:08x} {:08x}",
                     self.bits
                 ),
             },
-            Class::Alu(AluOp::Add) => {
-                if self.rs1 == 0 {
-                    format!("li    x{rd}={imm}")
-                } else if self.rs2 == 0 {
-                    format!("mv    x{rd}=x{rs1}")
+            Class::Alu(AluOp::Add, w) => {
+                if self.rs2 == 0 && !w {
+                    format!("mv      x{rd}=x{rs1}")
                 } else {
-                    format!("add   x{rd}=x{rs1},x{rs2}")
+                    format!("add{}    x{rd}=x{rs1},x{rs2}", if w { "w" } else { " " })
                 }
             }
-            Class::Alu(op) => format!("{op:5?}   x{rd}=x{rs1},x{rs2}"),
-            Class::AluImm(op, imm) => format!("{op:5?}   x{rd}=x{rs1},{imm}"),
+            Class::Alu(op, w) => {
+                format!(
+                    "{:8}x{rd}=x{rs1},x{rs2}",
+                    format!("{op:?}{}", if w { "w" } else { " " }).to_lowercase()
+                )
+            }
+            Class::AluImm(op, w, imm) => {
+                if op == AluOp::Add && self.rs1 == 0 && !w {
+                    format!("li      x{rd}={imm}")
+                } else {
+                    format!(
+                        "{:8}x{rd}=x{rs1},{imm}",
+                        format!("{op:?}{}", if w { "w" } else { " " }).to_lowercase()
+                    )
+                }
+            }
             Class::Branch { cond, target } => {
                 let cond = ["eq", "ne", "?1", "?2", "lt", "ge", "ltu", "geu"][cond as usize]; // XXX -> rv64
-                format!("b{cond:3}  x{},x{},{target}", self.rs1, self.rs2)
+                format!("b{cond:3}    x{},x{},0x{target:x}", self.rs1, self.rs2)
             }
             _ => todo!(
                 "Didn't handle opcode {:?} from {pc:08x} {:08x}",
@@ -322,67 +345,42 @@ impl Insn {
     }
 }
 
-// Helper
-fn decode_op(bits: i32, has_imm: bool) -> AluOp {
-    let funct7 = funct7_bf(bits) as usize;
-    let funct3 = funct3_bf(bits) as usize;
-    let imm12 = itype_imm12_bf(bits);
-
-    use AluOp::*;
-    if has_imm {
-        // XXX Some illegal instructions are missed here
-        if funct3 == 5 && imm12 & (1 << 10) != 0 {
-            Sra
-        } else {
-            [Add, Sll, Slt, Sltu, Xor, Srl, Or, And][funct3]
-        }
-    } else {
-        match (funct7, imm12) {
-            (0, 1024) if funct3 == 0 => Sub,
-            (0, 1024) if funct3 == 5 => Sra,
-            (0, 0) => [Add, Sll, Slt, Sltu, Xor, Srl, Or, And][funct3],
-            (1, 0) => [Mulh, Mulhsu, Mulhu, Div, Divu, Rem, Remu][funct3],
-            (funct7, imm) => panic!("Alu {funct7}, {funct3}, {imm} illegal?"),
-        }
-    }
-}
-
 pub fn decode(addr: i64, orig_bits: i32, _xlen: usize) -> Insn {
     let bits: i32 = /*rvcdecoder(orig_bits, xlen)*/ orig_bits;
 
     let base: Insn = Insn {
         addr,
         bits,
-        size: if opext_bf(orig_bits) == 3 { 4 } else { 2 },
+        compressed: opext_bf(orig_bits) != 3,
         class: Class::Illegal,
         rd: 0,
         rs1: 0,
         rs2: 0,
-        imm: 0,
     };
 
     let rd = rd_bf(bits);
     let rs1 = rs1_bf(bits);
     let rs2 = rs2_bf(bits);
-    let funct3 = funct3_bf(bits);
-    let funct7 = funct7_bf(bits);
+    let funct3 = funct3_bf(bits) as usize;
+    let funct7 = funct7_bf(bits) as usize;
 
+    use AluOp::*;
     use Opcode::*;
     match FromPrimitive::from_i32(opcode_bf(bits)).unwrap() {
         Load => Insn {
             class: Class::Load {
                 size: 1 << (funct3 & 3),
-                signed: funct3 < LoadKind::Lw as i32,
+                imm: itype_imm12_bf(bits),
+                signed: funct3 < LoadKind::Lw as usize,
             },
             rd,
             rs1,
-            imm: itype_imm12_bf(bits),
             ..base
         },
 
         LoadFp => Insn {
             // XXX Pretend it's a nop
-            class: Class::Alu(AluOp::Add),
+            class: Class::Alu(AluOp::Add, false),
             ..base
         },
 
@@ -397,21 +395,94 @@ pub fn decode(addr: i64, orig_bits: i32, _xlen: usize) -> Insn {
              */
         }
 
-        OpImm | OpImm32 => Insn {
-            class: Class::AluImm(decode_op(bits, true), itype_imm12_bf(bits)),
-            rd,
-            rs1,
-            ..base
-        },
+        Op => {
+            let op = match (funct7, funct3) {
+                (0, _) => [Add, Sll, Slt, Sltu, Xor, Srl, Or, And][funct3],
+                (1, _) => [Mulh, Mulhsu, Mulhu, Div, Divu, Rem, Remu][funct3],
+                (32, 0) => Sub,
+                (32, 5) => Sra,
+                _ => panic!("{bits:8x} OP {funct7}, {funct3} illegal"),
+            };
+
+            Insn {
+                class: Class::Alu(op, false),
+                rd,
+                rs1,
+                rs2,
+                ..base
+            }
+        }
+
+        Op32 => {
+            let op = match (funct7, funct3) {
+                (0, 0) => Add,
+                (32, 0) => Sub,
+                (0, 1) => Sll,
+                (0, 5) => Srl,
+                (32, 5) => Sra,
+                _ => panic!("{bits:8x} OP32 {funct7}, {funct3} illegal"),
+            };
+
+            Insn {
+                class: Class::Alu(op, true),
+                rd,
+                rs1,
+                rs2,
+                ..base
+            }
+        }
+
+        OpImm => {
+            // NB: This is very specifically for RV64
+            let mut imm = itype_imm12_bf(bits);
+            let op = match (funct7, funct3) {
+                (0 | 1, 1) => Sll,
+                (0 | 1, 5) => Srl,
+                (32 | 33, 5) => {
+                    imm &= 63;
+                    Sra
+                }
+                (_, 0 | 2 | 3 | 4 | 6 | 7) => [Add, Sll, Slt, Sltu, Xor, Srl, Or, And][funct3],
+                (funct7, funct3) => panic!("{bits:8x} OP_IMM {funct7}, {funct3} illegal"),
+            };
+
+            Insn {
+                class: Class::AluImm(op, false, imm),
+                rd,
+                rs1,
+                ..base
+            }
+        }
+
+        OpImm32 => {
+            let mut imm = itype_imm12_bf(bits);
+            let op = match (funct7, funct3) {
+                (_, 0) => Add,
+                (0, 1) => Sll,
+                (0, 5) => Srl,
+                (32, 5) => {
+                    imm &= 31;
+                    Sra
+                }
+                (funct7, funct3) => panic!("{bits:8x} OP_IMM32 {funct7}, {funct3} illegal"),
+            };
+
+            Insn {
+                class: Class::AluImm(op, true, imm),
+                rd,
+                rs1,
+                ..base
+            }
+        }
 
         Auipc => Insn {
-            class: Class::AluImm(AluOp::Add, addr.wrapping_add(utype_imm20_bf(bits))),
+            class: Class::Imm(addr.wrapping_add(utype_imm20_bf(bits))),
             rd,
             ..base
         },
 
         Lui => Insn {
-            class: Class::AluImm(AluOp::Add, utype_imm20_bf(bits)),
+            class: Class::Imm(utype_imm20_bf(bits)),
             rd,
             ..base
         },
@@ -419,15 +490,15 @@ pub fn decode(addr: i64, orig_bits: i32, _xlen: usize) -> Insn {
         Store if funct3 <= 3 => Insn {
             class: Class::Store {
                 size: 1 << (funct3 & 3),
+                imm: stype_imm12_bf(bits),
             },
             rs1,
             rs2,
-            imm: stype_imm12_bf(bits),
             ..base
         },
 
         StoreFp => Insn {
-            class: Class::Alu(AluOp::Add), // nop
+            class: Class::Alu(AluOp::Add, false), // nop
             ..base
         },
 
@@ -436,14 +507,18 @@ pub fn decode(addr: i64, orig_bits: i32, _xlen: usize) -> Insn {
             let signed = funct3 & 1 == 0;
             let base = Insn { rd, rs1, ..base };
 
-            match FromPrimitive::from_i32(funct7 >> 2) {
+            match FromPrimitive::from_usize(funct7 >> 2) {
                 Some(OpcodeAmo::Lr) => Insn {
-                    class: Class::Load { size, signed },
+                    class: Class::Load {
+                        size,
+                        imm: stype_imm12_bf(bits),
+                        signed,
+                    },
                     ..base
                 },
 
                 Some(OpcodeAmo::Sc) => Insn {
-                    class: Class::Store { size },
+                    class: Class::Store { size, imm: 0 },
                     rs2,
                     ..base
                 },
@@ -469,27 +544,10 @@ pub fn decode(addr: i64, orig_bits: i32, _xlen: usize) -> Insn {
             }
         }
 
-        Op | Op32 => {
-            /* RV32M */
-            /* XXX
-            if funct7 != 1 && (!((funct3 == AddSub || funct3 == Sral) && funct7 == 0x20 || i.r.funct7 == 0x00)) {
-                panic!("goto unhandled;");
-            }
-             */
-
-            Insn {
-                class: Class::Alu(decode_op(bits, false)), // XXX doesn't deal with Op32
-                rd,
-                rs1,
-                rs2,
-                ..base
-            }
-        }
-
         Branch => Insn {
             class: Class::Branch {
                 cond: FromPrimitive::from_i32(funct3_bf(bits)).unwrap(),
-                target: addr.wrapping_add(sbtype_imm12_bf(bits)),
+                target: addr.wrapping_add(sbtype_imm12_bf(bits) as i64),
             },
             rs1,
             rs2,
@@ -497,10 +555,9 @@ pub fn decode(addr: i64, orig_bits: i32, _xlen: usize) -> Insn {
         },
 
         Jalr => Insn {
-            class: Class::JumpR,
+            class: Class::JumpR(itype_imm12_bf(bits)),
             rd,
             rs1,
-            imm: itype_imm12_bf(bits),
             ..base
         },
 
@@ -611,11 +668,18 @@ fn parse_riscv() {
     // 800114bc:       21944683                lbu     x13,537(x8)
     // 800114c0:       04000713                addi    x14,x0,64
     // 800114c4:       64d77063                bgeu    x14,x13,80011b04 <main+0x908>
+    // 1000009c:       011b8833                add     v0,a5,v1
+    // 80000130:       4041d233                sra     tp,gp,tp
+    // 8000223c:       41f55893                srai    a7,a0,0x1f
+    // 8000013c:       0071d3b3                srl     t2,gp,t2
+    // 80000124:       01f1d313                srli    t1,gp,0x1f
+    // 800000ac:       01f51513                slli    a0,a0,0x1f
 
-    let insns: [u32; 16] = [
+    let insns: [u32; 22] = [
         0x04100693, 0x20d98c23, 0x04200693, 0x20d40ca3, 0x00012683, 0x01ec4703, 0x00100793,
         0x04d12823, 0x00412683, 0x22478513, 0xf0dee0ef, 0x21cca503, 0xc85ee0ef, 0x21944683,
-        0x04000713, 0x64d77063,
+        0x04000713, 0x64d77063, 0x011b8833, 0x4041d233, 0x41f55893, 0x0071d3b3, 0x01f1d313,
+        0x01f51513,
     ];
 
     println!();
