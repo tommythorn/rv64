@@ -54,19 +54,13 @@ impl Insn {
                 }
             }
 
-            Class::Alu => match funct3_bf(self.bits) {
-                0 => {
-                    let imm = self.imm;
-                    // XXX I don't like this.  Maybe AluImm should be a thing?
-                    let sum = v1.wrapping_add(imm as i32);
-                    res = sum.wrapping_add(v2);
-                }
-                _ => panic!(
-                    "Didn't handle OP_IMM funct3 {} from {pc:08x} {:08x}",
-                    funct3_bf(self.bits),
-                    self.bits
-                ),
-            },
+            Class::Alu(AluOp::Add) => {
+                res = v1.wrapping_add(v2);
+            }
+
+            Class::AluImm(AluOp::Add, imm) => {
+                res = v1.wrapping_add(imm as i32);
+            }
 
             Class::Branch { cond, target } => {
                 use BranchCondition::*;
@@ -83,6 +77,12 @@ impl Insn {
                     nextpc = target;
                 }
             }
+
+            Class::JumpR => {
+                res = self.addr as i32 + self.size as i32;
+                nextpc = ((v1 + self.imm as i32) & !-2) as i64;
+            }
+
             _ => panic!(
                 "Didn't handle opcode {:?} from {pc:08x} {:08x}",
                 self.class, self.bits,

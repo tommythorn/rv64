@@ -94,6 +94,18 @@ pub enum LoadKind {
 }
 
 #[derive(Copy, Clone, FromPrimitive)]
+pub enum OpcodeMulDiv {
+    Mul,
+    Mulh,
+    Mulhsu,
+    Mulhu,
+    Div,
+    Divu,
+    Rem,
+    Remu,
+}
+
+#[derive(Copy, Clone, FromPrimitive)]
 pub enum OpcodeAmo {
     Amoadd = 0,
     Amoswap = 1,
@@ -109,16 +121,38 @@ pub enum OpcodeAmo {
     Amomaxu = 28,
 }
 
+#[derive(Copy, Clone, Debug)]
+pub enum AluOp {
+    Add,
+    Sub,
+    Sll,
+    Slt,
+    Sltu,
+    Xor,
+    Srl,
+    Sra,
+    Or,
+    And,
+    Mulh,
+    Mulhsu,
+    Mulhu,
+    Div,
+    Divu,
+    Rem,
+    Remu,
+}
+
 #[derive(Debug)]
 pub enum Class {
-    Illegal,
-    Alu,
+    Alu(AluOp),
+    AluImm(AluOp, i64),
     Load { size: usize, signed: bool },
     Store { size: usize },
+    Branch { target: i64, cond: BranchCondition },
     Jump { target: i64 },
-    Branch { cond: BranchCondition, target: i64 },
-    Compjump,
+    JumpR,
     Atomic,
+    Illegal,
 }
 
 #[allow(dead_code)]
@@ -264,23 +298,17 @@ impl Insn {
                     self.bits
                 ),
             },
-            Class::Alu => match funct3_bf(self.bits) {
-                0 => {
-                    if self.rs1 == 0 {
-                        format!("li    x{rd}={imm}")
-                    } else if self.imm == 0 {
-                        format!("mv    x{rd}=x{rs1}")
-                    } else {
-                        format!("add   x{rd}=x{rs1},{imm}")
-                    }
+            Class::Alu(AluOp::Add) => {
+                if self.rs1 == 0 {
+                    format!("li    x{rd}={imm}")
+                } else if self.rs2 == 0 {
+                    format!("mv    x{rd}=x{rs1}")
+                } else {
+                    format!("add   x{rd}=x{rs1},x{rs2}")
                 }
-                _ => todo!(
-                    "Didn't handle OP_IMM funct3 {} from {pc:08x} {:08x}",
-                    funct3_bf(self.bits),
-                    self.bits
-                ),
-            },
-
+            }
+            Class::Alu(op) => format!("{op:5?}   x{rd}=x{rs1},x{rs2}"),
+            Class::AluImm(op, imm) => format!("{op:5?}   x{rd}=x{rs1},{imm}"),
             Class::Branch { cond, target } => {
                 let cond = ["eq", "ne", "?1", "?2", "lt", "ge", "ltu", "geu"][cond as usize]; // XXX -> rv64
                 format!("b{cond:3}  x{},x{},{target}", self.rs1, self.rs2)
@@ -290,6 +318,31 @@ impl Insn {
                 self.class,
                 self.bits,
             ),
+        }
+    }
+}
+
+// Helper
+fn decode_op(bits: i32, has_imm: bool) -> AluOp {
+    let funct7 = funct7_bf(bits) as usize;
+    let funct3 = funct3_bf(bits) as usize;
+    let imm12 = itype_imm12_bf(bits);
+
+    use AluOp::*;
+    if has_imm {
+        // XXX Some illegal instructions are missed here
+        if funct3 == 5 && imm12 & (1 << 10) != 0 {
+            Sra
+        } else {
+            [Add, Sll, Slt, Sltu, Xor, Srl, Or, And][funct3]
+        }
+    } else {
+        match (funct7, imm12) {
+            (0, 1024) if funct3 == 0 => Sub,
+            (0, 1024) if funct3 == 5 => Sra,
+            (0, 0) => [Add, Sll, Slt, Sltu, Xor, Srl, Or, And][funct3],
+            (1, 0) => [Mulh, Mulhsu, Mulhu, Div, Divu, Rem, Remu][funct3],
+            (funct7, imm) => panic!("Alu {funct7}, {funct3}, {imm} illegal?"),
         }
     }
 }
@@ -329,7 +382,7 @@ pub fn decode(addr: i64, orig_bits: i32, _xlen: usize) -> Insn {
 
         LoadFp => Insn {
             // XXX Pretend it's a nop
-            class: Class::Alu,
+            class: Class::Alu(AluOp::Add),
             ..base
         },
 
@@ -345,24 +398,21 @@ pub fn decode(addr: i64, orig_bits: i32, _xlen: usize) -> Insn {
         }
 
         OpImm | OpImm32 => Insn {
-            class: Class::Alu,
+            class: Class::AluImm(decode_op(bits, true), itype_imm12_bf(bits)),
             rd,
             rs1,
-            imm: itype_imm12_bf(bits),
             ..base
         },
 
         Auipc => Insn {
-            class: Class::Alu,
+            class: Class::AluImm(AluOp::Add, addr.wrapping_add(utype_imm20_bf(bits))),
             rd,
-            imm: addr.wrapping_add(utype_imm20_bf(bits)),
             ..base
         },
 
         Lui => Insn {
-            class: Class::Alu,
+            class: Class::AluImm(AluOp::Add, utype_imm20_bf(bits)),
             rd,
-            imm: utype_imm20_bf(bits),
             ..base
         },
 
@@ -377,7 +427,7 @@ pub fn decode(addr: i64, orig_bits: i32, _xlen: usize) -> Insn {
         },
 
         StoreFp => Insn {
-            class: Class::Alu, // nop
+            class: Class::Alu(AluOp::Add), // nop
             ..base
         },
 
@@ -428,7 +478,7 @@ pub fn decode(addr: i64, orig_bits: i32, _xlen: usize) -> Insn {
              */
 
             Insn {
-                class: Class::Alu,
+                class: Class::Alu(decode_op(bits, false)), // XXX doesn't deal with Op32
                 rd,
                 rs1,
                 rs2,
@@ -447,7 +497,7 @@ pub fn decode(addr: i64, orig_bits: i32, _xlen: usize) -> Insn {
         },
 
         Jalr => Insn {
-            class: Class::Compjump,
+            class: Class::JumpR,
             rd,
             rs1,
             imm: itype_imm12_bf(bits),
