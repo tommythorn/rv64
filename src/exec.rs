@@ -68,6 +68,8 @@ impl Insn {
                 }*/
             }
 
+            Class::Imm(imm) => res = imm as i32,
+
             Class::Branch { cond, target } => {
                 use BranchCondition::*;
                 let taken = match cond {

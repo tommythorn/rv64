@@ -316,22 +316,15 @@ impl Insn {
                     format!("add{}    x{rd}=x{rs1},x{rs2}", if w { "w" } else { " " })
                 }
             }
-            Class::Alu(op, w) => {
-                format!(
-                    "{:8}x{rd}=x{rs1},x{rs2}",
-                    format!("{op:?}{}", if w { "w" } else { " " }).to_lowercase()
-                )
-            }
-            Class::AluImm(op, w, imm) => {
-                if op == AluOp::Add && self.rs1 == 0 && !w {
-                    format!("li      x{rd}={imm}")
-                } else {
-                    format!(
-                        "{:8}x{rd}=x{rs1},{imm}",
-                        format!("{op:?}{}", if w { "w" } else { " " }).to_lowercase()
-                    )
-                }
-            }
+            Class::Alu(op, w) => format!(
+                "{:8}x{rd}=x{rs1},x{rs2}",
+                format!("{op:?}{}", if w { "w" } else { " " }).to_lowercase()
+            ),
+            Class::AluImm(op, w, imm) => format!(
+                "{:8}x{rd}=x{rs1},{imm}",
+                format!("{op:?}{}", if w { "w" } else { " " }).to_lowercase()
+            ),
+            Class::Imm(imm) => format!("li      x{rd}={imm}"),
             Class::Branch { cond, target } => {
                 let cond = ["eq", "ne", "?1", "?2", "lt", "ge", "ltu", "geu"][cond as usize]; // XXX -> rv64
                 format!("b{cond:3}    x{},x{},0x{target:x}", self.rs1, self.rs2)
@@ -447,7 +440,11 @@ pub fn decode(addr: i64, orig_bits: i32, _xlen: usize) -> Insn {
             };
 
             Insn {
-                class: Class::AluImm(op, false, imm),
+                class: if op == Add && rs1 == 0 {
+                    Class::Imm(imm as i64)
+                } else {
+                    Class::AluImm(op, false, imm)
+                },
                 rd,
                 rs1,
                 ..base
