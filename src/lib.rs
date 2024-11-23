@@ -67,8 +67,8 @@ pub enum OpcodeOpImm {
     Andi,
 }
 
-#[derive(Copy, Clone, FromPrimitive)]
-pub enum OpcodeBranch {
+#[derive(Copy, Clone, FromPrimitive, Debug)]
+pub enum BranchCondition {
     Beq,
     Bne,
     Uimpbr2,
@@ -113,7 +113,7 @@ pub enum Class {
     Load { size: usize, signed: bool },
     Store { size: usize },
     Jump { target: i64 },
-    Branch { target: i64 },
+    Branch { cond: BranchCondition, target: i64 },
     Compjump,
     Atomic,
 }
@@ -135,7 +135,7 @@ pub struct Insn {
 impl fmt::Display for Insn {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let target = match self.class {
-            Class::Branch { target } => target,
+            Class::Branch { cond: _, target } => target,
             Class::Jump { target } => target,
             _ => 0,
         };
@@ -384,6 +384,7 @@ pub fn decode(addr: i64, orig_bits: i32, _xlen: usize) -> Insn {
 
         Branch => Insn {
             class: Class::Branch {
+                cond: FromPrimitive::from_i32(funct3_bf(bits)).unwrap(),
                 target: addr.wrapping_add(sbtype_imm12_bf(bits)),
             },
             rs1,
