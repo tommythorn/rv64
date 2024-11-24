@@ -329,6 +329,7 @@ impl Insn {
                 let cond = ["eq", "ne", "?1", "?2", "lt", "ge", "ltu", "geu"][cond as usize]; // XXX -> rv64
                 format!("b{cond:3}    x{},x{},0x{target:x}", self.rs1, self.rs2)
             }
+            Class::JumpR(imm) => format!("jalr    x{rd}=x{rs1},{imm}"),
             _ => todo!(
                 "Didn't handle opcode {:?} from {pc:08x} {:08x}",
                 self.class,
