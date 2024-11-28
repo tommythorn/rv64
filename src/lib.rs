@@ -1,5 +1,10 @@
+//mod disass;
+pub mod dromajo_trace;
 mod exec;
+mod rvc;
+//pub use disass::*;
 pub use exec::*;
+use rvc::RVC64_EXPANDED;
 
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
@@ -70,7 +75,7 @@ pub enum OpcodeOpImm {
     Andi,
 }
 
-#[derive(Copy, Clone, FromPrimitive, Debug)]
+#[derive(Copy, Clone, FromPrimitive, Debug, PartialEq)]
 pub enum BranchCondition {
     Eq,
     Ne,
@@ -164,7 +169,7 @@ impl fmt::Display for AluOp {
 // into all the possible cases, eg. Li, Add, AddI, Addw, ..., Lb, Lbu, ...,
 // Beq, .. ?
 
-#[derive(Debug)]
+#[derive(PartialEq, Debug)]
 pub enum Class {
     Imm(i64),
     Alu(AluOp, bool),
@@ -184,11 +189,11 @@ impl fmt::Display for Class {
     }
 }
 
+#[derive(PartialEq, Debug)]
 pub struct Insn {
     pub seqno: usize,
     pub addr: i64,
     pub bits: i32,
-    pub compressed: bool,
 
     // Decoded
     pub class: Class,
@@ -301,6 +306,10 @@ fn decoders() {
 }
 
 impl Insn {
+    fn compressed(&self) -> bool {
+        self.bits & 3 != 3
+    }
+
     pub fn disass(&self) -> String {
         let pc = self.addr;
         let rd = self.rd;
@@ -348,13 +357,16 @@ impl Insn {
 }
 
 pub fn decode(seqno: usize, addr: i64, orig_bits: i32, _xlen: usize) -> Insn {
-    let bits: i32 = /*rvcdecoder(orig_bits, xlen)*/ orig_bits;
+    let bits: i32 = if orig_bits & 3 == 3 {
+        orig_bits
+    } else {
+        RVC64_EXPANDED[(orig_bits & 0xFFFF) as usize] as i32
+    };
 
     let base: Insn = Insn {
         seqno,
         addr,
-        bits,
-        compressed: opext_bf(orig_bits) != 3,
+        bits: orig_bits,
         class: Class::Illegal,
         rd: 0,
         rs1: 0,
@@ -652,7 +664,7 @@ pub fn decode(seqno: usize, addr: i64, orig_bits: i32, _xlen: usize) -> Insn {
                     break;
                 }
         */
-        _ => panic!("not done yet"),
+        x => todo!("Decode {x:?}"),
     }
 }
 

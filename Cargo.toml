@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 num-traits = "*"
 num-derive = "*"
+anyhow = "1.0.93"

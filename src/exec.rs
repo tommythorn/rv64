@@ -15,7 +15,7 @@ pub struct ExecEffect {
 impl Insn {
     pub fn exec(&self, v1: i64, v2: i64, mem_20000000: &[i64]) -> ExecEffect {
         let mut res = 0;
-        let mut nextpc = self.addr + if self.compressed { 2 } else { 4 };
+        let mut nextpc = self.addr + if self.compressed() { 2 } else { 4 };
         let mut store = None;
         let pc = self.addr;
 
