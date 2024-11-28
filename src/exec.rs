@@ -73,12 +73,12 @@ impl Insn {
             Class::Branch { cond, target } => {
                 use BranchCondition::*;
                 let taken = match cond {
-                    Beq => v1 == v2,
-                    Bne => v1 != v2,
-                    Blt => v1 < v2,
-                    Bge => v1 >= v2,
-                    Bltu => (v1 as u32) < v2 as u32,
-                    Bgeu => (v1 as u32) >= v2 as u32,
+                    Eq => v1 == v2,
+                    Ne => v1 != v2,
+                    Lt => v1 < v2,
+                    Ge => v1 >= v2,
+                    Ltu => (v1 as u32) < v2 as u32,
+                    Geu => (v1 as u32) >= v2 as u32,
                     _ => panic!("rv64 decode should have caught this"),
                 };
                 if taken {

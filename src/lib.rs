@@ -72,14 +72,20 @@ pub enum OpcodeOpImm {
 
 #[derive(Copy, Clone, FromPrimitive, Debug)]
 pub enum BranchCondition {
-    Beq,
-    Bne,
+    Eq,
+    Ne,
     Uimpbr2,
     Uimpbr3,
-    Blt,
-    Bge,
-    Bltu,
-    Bgeu,
+    Lt,
+    Ge,
+    Ltu,
+    Geu,
+}
+
+impl fmt::Display for BranchCondition {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.pad(&format!("{self:?}").to_lowercase())
+    }
 }
 
 #[derive(Copy, Clone, FromPrimitive)]
@@ -154,6 +160,10 @@ impl fmt::Display for AluOp {
 /// Branch and jump targets are also resolved and represented with the
 /// full i64 target address.
 
+// XXX For fast interpretation it might be better to expand this fully
+// into all the possible cases, eg. Li, Add, AddI, Addw, ..., Lb, Lbu, ...,
+// Beq, .. ?
+
 #[derive(Debug)]
 pub enum Class {
     Imm(i64),
@@ -175,6 +185,7 @@ impl fmt::Display for Class {
 }
 
 pub struct Insn {
+    pub seqno: usize,
     pub addr: i64,
     pub bits: i32,
     pub compressed: bool,
@@ -325,10 +336,7 @@ impl Insn {
                 format!("{op:?}{}", if w { "w" } else { " " }).to_lowercase()
             ),
             Class::Imm(imm) => format!("li      x{rd}={imm}"),
-            Class::Branch { cond, target } => {
-                let cond = ["eq", "ne", "?1", "?2", "lt", "ge", "ltu", "geu"][cond as usize]; // XXX -> rv64
-                format!("b{cond:3}    x{},x{},0x{target:x}", self.rs1, self.rs2)
-            }
+            Class::Branch { cond, target } => format!("b{cond:3}    x{rs1},x{rs2},0x{target:x}"),
             Class::JumpR(imm) => format!("jalr    x{rd}=x{rs1},{imm}"),
             _ => todo!(
                 "Didn't handle opcode {:?} from {pc:08x} {:08x}",
@@ -339,10 +347,11 @@ impl Insn {
     }
 }
 
-pub fn decode(addr: i64, orig_bits: i32, _xlen: usize) -> Insn {
+pub fn decode(seqno: usize, addr: i64, orig_bits: i32, _xlen: usize) -> Insn {
     let bits: i32 = /*rvcdecoder(orig_bits, xlen)*/ orig_bits;
 
     let base: Insn = Insn {
+        seqno,
         addr,
         bits,
         compressed: opext_bf(orig_bits) != 3,
@@ -682,6 +691,9 @@ fn parse_riscv() {
 
     println!();
     for (i, insn) in insns.iter().enumerate() {
-        println!("{}", decode(0x800113fci64 + 4 * i as i64, *insn as i32, 32));
+        println!(
+            "{}",
+            decode(i, 0x800113fci64 + 4 * i as i64, *insn as i32, 32)
+        );
     }
 }
