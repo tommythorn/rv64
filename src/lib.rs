@@ -93,6 +93,18 @@ impl fmt::Display for BranchCondition {
     }
 }
 
+#[derive(Copy, Clone, FromPrimitive, Debug, PartialEq)]
+pub enum OpcodeOpSystem {
+    EcallEbreak,
+    CsrRW,
+    CsrRS,
+    CsrRC,
+    Reserved,
+    CsrRWI,
+    CsrRSI,
+    CsrRCI,
+}
+
 #[derive(Copy, Clone, FromPrimitive)]
 pub enum LoadKind {
     Lb,
@@ -174,6 +186,7 @@ pub enum Class {
     Imm(i64),
     Alu(AluOp, bool),
     AluImm(AluOp, bool, i16),
+    CsrOp(CsrOp, Option<Csr>, Option<Csr>, Option<i16>),
     Load { size: usize, imm: i16, signed: bool },
     Store { size: usize, imm: i16 },
     Branch { target: i64, cond: BranchCondition },
@@ -181,6 +194,7 @@ pub enum Class {
     JumpR(i16),
     Atomic,
     Illegal,
+    Todo, // Meaning I found something i don't understand but let's keep going
 }
 
 impl fmt::Display for Class {
@@ -588,6 +602,48 @@ pub fn decode(seqno: usize, addr: i64, orig_bits: i32, _xlen: usize) -> Insn {
             ..base
         },
 
+        System => {
+	    use OpcodeOpSystem::*;
+	    let prim = FromPrimitive::from_i32(funct3_bf(bits)).unwrap();
+	    match prim {
+            EcallEbreak => Insn {
+                class: Class::Todo,
+                ..base
+            },
+            CsrRW | CsrRS | CsrRC | CsrRWI | CsrRSI | CsrRCI => {
+		// XXX Need to double check this
+		let csr_s = match prim {
+		    CsrRS if rs1_bf(bits) == 0 |
+		    CsrRW if rd_bf(bits) == 0 |
+		    CsrRWI if rd_bf(bits) == 0 => None,
+		    _ => Some(itype_imm12_bf(bits)),
+		};
+		let csr_d = itype_imm12_bf(bits);
+		let op = match prim {
+		    CsrRS XXXX if rs1_bf(bits) == 0 |
+		    CsrRW if rd_bf(bits) == 0 |
+		    CsrRWI if rd_bf(bits) == 0 => None,
+		    _ => Some(),
+		};
+		
+
+		    match prim {
+
+			CsrRW | CsrRS | CsrRC | CsrRWI | CsrRSI | CsrRCI => {
+
+		    Insn {
+			class: Class::CsrOp(XXX, 
+			    
+			),
+			..base
+		    }
+		},
+            _ => Insn {
+                class: Class::Illegal,
+                ..base
+            },
+        },
+
         /*
         System => Insn {
                   dec.system = true;
@@ -663,8 +719,11 @@ pub fn decode(seqno: usize, addr: i64, orig_bits: i32, _xlen: usize) -> Insn {
                     */
                     break;
                 }
-        */
-        x => todo!("Decode {x:?}"),
+         */
+        _ => Insn {
+            class: Class::Todo,
+            ..base
+        },
     }
 }
 
