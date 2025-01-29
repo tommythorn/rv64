@@ -45,7 +45,7 @@ impl Insn {
                 let w = mem_20000000[(addr as usize - 0x20000000) / 4];
                 match size {
                     1 if !signed => {
-                        res = w >> (8 * (addr & 7)) & 255;
+                        res = (w >> (8 * (addr & 7))) & 255;
                     }
                     _ => todo!(
                         "Didn't handle LOAD size {size} signed {signed} from {pc:08x} {:08x}",

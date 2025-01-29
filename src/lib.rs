@@ -93,6 +93,18 @@ impl fmt::Display for BranchCondition {
     }
 }
 
+#[derive(Copy, Clone, FromPrimitive, Debug, PartialEq)]
+pub enum OpcodeOpSystem {
+    EcallEbreak,
+    CsrRW,
+    CsrRS,
+    CsrRC,
+    Reserved,
+    CsrRWI,
+    CsrRSI,
+    CsrRCI,
+}
+
 #[derive(Copy, Clone, FromPrimitive)]
 pub enum LoadKind {
     Lb,
@@ -144,6 +156,7 @@ pub enum AluOp {
     Sra,
     Or,
     And,
+    Mul,
     Mulh,
     Mulhsu,
     Mulhu,
@@ -157,6 +170,19 @@ impl fmt::Display for AluOp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", format!("{self:?}").to_lowercase())
     }
+}
+
+#[derive(PartialEq, Debug)]
+pub enum CsrOp {
+    Set,
+    Clear,
+    Write,
+}
+
+#[derive(PartialEq, Debug)]
+pub enum Fence {
+    Mem,
+    I,
 }
 
 /// `Class` is a slightly abstracted RISC-V RV64 instruction, aiming
@@ -174,13 +200,33 @@ pub enum Class {
     Imm(i64),
     Alu(AluOp, bool),
     AluImm(AluOp, bool, i16),
-    Load { size: usize, imm: i16, signed: bool },
-    Store { size: usize, imm: i16 },
-    Branch { target: i64, cond: BranchCondition },
-    Jump { target: i64 },
+    CsrOp {
+        op: CsrOp,
+        dst: Option<Csr>,
+        src: Option<Csr>,
+        imm: Option<u8>,
+    },
+    Load {
+        size: usize,
+        imm: i16,
+        signed: bool,
+    },
+    Store {
+        size: usize,
+        imm: i16,
+    },
+    Branch {
+        target: i64,
+        cond: BranchCondition,
+    },
+    Jump {
+        target: i64,
+    },
     JumpR(i16),
     Atomic,
+    Fence(Fence),
     Illegal,
+    Todo, // Meaning I found something i don't understand but let's keep going
 }
 
 impl fmt::Display for Class {
@@ -394,29 +440,32 @@ pub fn decode(seqno: usize, addr: i64, orig_bits: i32, _xlen: usize) -> Insn {
         },
 
         LoadFp => Insn {
-            // XXX Pretend it's a nop
+            // XXX Pretend it's a nop, for now
             class: Class::Alu(AluOp::Add, false),
             ..base
         },
 
-        MiscMem => {
-            todo!("MiscMem need finer decoding")
-            /*
-               Insn {
-                class: Class::Branch { target: 666 /* XXX ??? */ },
-                system: true,
+        MiscMem => match funct3 {
+            0 => Insn {
+                class: Class::Fence(Fence::Mem),
                 ..base
-            }
-             */
-        }
+            },
+            1 => Insn {
+                class: Class::Fence(Fence::I),
+                ..base
+            },
+            _ => todo!("MiscMem need finer decoding? {addr:x}:{bits:08x} (funct3 {funct3})"),
+        },
 
         Op => {
             let op = match (funct7, funct3) {
                 (0, _) => [Add, Sll, Slt, Sltu, Xor, Srl, Or, And][funct3],
-                (1, _) => [Mulh, Mulhsu, Mulhu, Div, Divu, Rem, Remu][funct3],
+                (1, _) => [Mul, Mulh, Mulhsu, Mulhu, Div, Divu, Rem, Remu][funct3],
                 (32, 0) => Sub,
                 (32, 5) => Sra,
-                _ => panic!("{bits:8x} OP {funct7}, {funct3} illegal"),
+                _ => {
+                    return base; // Illegal
+                }
             };
 
             Insn {
@@ -429,13 +478,29 @@ pub fn decode(seqno: usize, addr: i64, orig_bits: i32, _xlen: usize) -> Insn {
         }
 
         Op32 => {
-            let op = match (funct7, funct3) {
-                (0, 0) => Add,
-                (32, 0) => Sub,
-                (0, 1) => Sll,
-                (0, 5) => Srl,
-                (32, 5) => Sra,
-                _ => panic!("{bits:8x} OP32 {funct7}, {funct3} illegal"),
+            let imm = bits >> 25;
+            let op = if imm == 1 {
+                match funct3 {
+                    0 => Mul,
+                    4 => Div,
+                    5 => Divu,
+                    6 => Rem,
+                    7 => Remu,
+                    _ => {
+                        return base; // Illegal
+                    }
+                }
+            } else {
+                match (imm, funct3) {
+                    (0, 0) => Add,
+                    (32, 0) => Sub,
+                    (0, 1) => Sll,
+                    (0, 5) => Srl,
+                    (32, 5) => Sra,
+                    _ => {
+                        return base; // Illegal
+                    }
+                }
             };
 
             Insn {
@@ -458,7 +523,9 @@ pub fn decode(seqno: usize, addr: i64, orig_bits: i32, _xlen: usize) -> Insn {
                     Sra
                 }
                 (_, 0 | 2 | 3 | 4 | 6 | 7) => [Add, Sll, Slt, Sltu, Xor, Srl, Or, And][funct3],
-                (funct7, funct3) => panic!("{bits:8x} OP_IMM {funct7}, {funct3} illegal"),
+                _ => {
+                    return base; // Illegal
+                }
             };
 
             Insn {
@@ -483,7 +550,9 @@ pub fn decode(seqno: usize, addr: i64, orig_bits: i32, _xlen: usize) -> Insn {
                     imm &= 31;
                     Sra
                 }
-                (funct7, funct3) => panic!("{bits:8x} OP_IMM32 {funct7}, {funct3} illegal"),
+                _ => {
+                    return base; // Illegal
+                }
             };
 
             Insn {
@@ -556,10 +625,7 @@ pub fn decode(seqno: usize, addr: i64, orig_bits: i32, _xlen: usize) -> Insn {
                     ..base
                 },
 
-                _ => Insn {
-                    class: Class::Illegal,
-                    ..base
-                },
+                _ => base, // Illegal
             }
         }
 
@@ -588,83 +654,55 @@ pub fn decode(seqno: usize, addr: i64, orig_bits: i32, _xlen: usize) -> Insn {
             ..base
         },
 
-        /*
-        System => Insn {
-                  dec.system = true;
-                  switch (i.r.funct3) {
-                  case ECALLEBREAK:
-                      switch (i.i.imm11_0) {
-                      case ECALL:
-                      case EBREAK:
-                      case SRET:
-                      case MRET:
-                          class: isa_insn_class_compjump;
-                          break;
-
-                      case WFI:
-                          class: Class::Alu,
-                          break;
-                      }
-                      break;
-
-                  case CSRRS:
-                      if (i.i.rs1:= 0) {
-                          dec.source_msr_a = 0xFFF & (unsigned) i.i.imm11_0;
-                          rd,
-                          class: Class::Alu,
-                          // XXX treating this as non-sequential is fragile, but
-                          // works except for xSTATUS, INSTRET, and CYCLE
-                          break;
-                      }
-                      /* Fall-through */
-
-                  case CSRRC:
-                      rs1,
-                  case CSRRSI:
-                  case CSRRCI:
-                      dec.source_msr_a = 0xFFF & (unsigned) i.i.imm11_0;
-                      dec.dest_msr     = 0xFFF & (unsigned) i.i.imm11_0;
-                      rd,
-                      class: Class::Alu,
-                      break;
-
-                  case CSRRW:
-                      rs1,
-                  case CSRRWI:
-                      dec.dest_msr     = 0xFFF & (unsigned) i.i.imm11_0;
-                      rd,
-                      class: Class::Alu,
-
-                      if (i.i.rd)
-                          dec.source_msr_a = 0xFFF & (unsigned) i.i.imm11_0;
-                      break;
-
-                  default:
-                      goto unhandled;
-                  }
-                  break;
-
-                Op_FP => Insn {
-                    switch (i.r.funct7) {
-                    case FMV_D_X:
-                        class: Class::Alu, // XXX alu_fp?
-                        //dec.source_freg_a = i.r.rs1;
-                        //dec.dest_freg     = i.r.rd;
-                        break;
-                    default: goto unhandled;
+        System => {
+            use OpcodeOpSystem::*;
+            let prim = FromPrimitive::from_i32(funct3_bf(bits)).unwrap();
+            match prim {
+                EcallEbreak => Insn {
+                    class: Class::Todo,
+                    ..base
+                },
+                CsrRW | CsrRS | CsrRC | CsrRWI | CsrRSI | CsrRCI => {
+                    let src = match prim {
+                        // Special case: with no register destination,
+                        // the CSR is only written, not read
+                        CsrRW if rd == 0 => None,
+                        CsrRWI if rd == 0 => None,
+                        _ => Some(itype_imm12_bf(bits) as u16),
+                    };
+                    let dst = match prim {
+                        CsrRS if rs1 == 0 => {
+                            // Special case: with no source register,
+                            // the CSR is only read, not written
+                            None
+                        }
+                        _ => Some(itype_imm12_bf(bits) as u16),
+                    };
+                    let op = match prim {
+                        CsrRS | CsrRSI => CsrOp::Set,
+                        CsrRC | CsrRCI => CsrOp::Clear,
+                        CsrRW | CsrRWI => CsrOp::Write,
+                        _ => unreachable!(),
+                    };
+                    let imm = match prim {
+                        CsrRSI | CsrRCI | CsrRWI => Some(rs1_bf(bits)),
+                        _ => None,
+                    };
+                    Insn {
+                        class: Class::CsrOp { op, dst, src, imm },
+                        rd,
+                        rs1,
+                        ..base
                     }
-                    break;
-
-                default:
-                unhandled:
-                    /*
-                    warn("Opcode %s not decoded, insn %08"PRIx32":%08x\n",
-                         opcode_name[i.r.opcode], (uint32_t)insn_addr, i.raw);
-                    */
-                    break;
                 }
-        */
-        x => todo!("Decode {x:?}"),
+                _ => base, // Illegal
+            }
+        }
+
+        _ => Insn {
+            class: Class::Todo,
+            ..base
+        },
     }
 }
 
